@@ -1,0 +1,12 @@
+{
+  "name": "genai-live-relay",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@google/genai": "^0.3.0",
+    "ws": "^8.17.1"
+  },
+  "scripts": {
+    "start": "node node/ws-relay.mjs"
+  }
+}
