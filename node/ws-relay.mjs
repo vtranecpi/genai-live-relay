@@ -29,7 +29,7 @@ async function httpsPing(url) {
 async function wsEchoTest() {
   return await new Promise((resolve) => {
     const ws = new WebSocket('wss://echo.websocket.events');
-    const timer = setTimeout(() => { try{ ws.close(); }catch{}; resolve({ ok:false, error:'timeout' }); }, 8000);
+    const timer = setTimeout(() => { try { ws.close(); } catch {} ; resolve({ ok:false, error:'timeout' }); }, 8000);
     ws.on('open',  () => { clearTimeout(timer); ws.close(); resolve({ ok:true }); });
     ws.on('error', e  => { clearTimeout(timer); resolve({ ok:false, error:String(e) }); });
   });
@@ -53,7 +53,7 @@ async function selftestLive(apiKey) {
           onOpen:  () => { clearTimeout(timer); resolve({ ok:true, stage:'open' }); try { live?.close?.(); } catch {} },
           onError: (e) => { clearTimeout(timer); resolve({ ok:false, stage:'onError', error: e?.message || String(e) }); },
           onClose: () => {},
-          // IMPORTANT: current SDK expects this to exist:
+          // Required by current SDK:
           onmessage: () => {}
         }
       });
@@ -168,11 +168,30 @@ wss.on('connection', async (client) => {
         },
         onClose: () => { log('live closed'); send(client,{type:'status',value:'closed'}); shutdown('live closed'); },
         onError: (e) => { log('live err', e?.message || e); send(client,{type:'error',message: e?.message || String(e)}); },
-        // Required by current SDK:
-        onmessage: () => {},
+        onmessage: () => {}, // required by SDK
         onResponse: (evt) => {
           try {
             const text =
               evt?.text ??
-              evt?.response?.output?.[0]?.c
-::contentReference[oaicite:0]{index=0}
+              evt?.response?.output?.[0]?.content?.parts?.map(p=>p.text).join(' ') ??
+              evt?.response?.candidates?.[0]?.content?.parts?.map(p=>p.text).join(' ');
+            if (text) send(client, { type:'text', text });
+            if (evt?.audio?.data) {
+              const b64 = (evt.audio.data instanceof ArrayBuffer)
+                ? Buffer.from(evt.audio.data).toString('base64')
+                : (typeof evt.audio.data === 'string' ? evt.audio.data : null);
+              if (b64) send(client, { type:'audio', encoding:'mp3/base64', data:b64 });
+            }
+          } catch (e) { send(client,{type:'error',message:String(e)}); }
+        }
+      }
+    });
+
+  } catch (e) {
+    log('setup err', e?.message || e);
+    send(client, { type:'error', message: e?.message || String(e) });
+    shutdown('setup error');
+  }
+});
+
+server.listen(PORT, HOST, () => log(`ws relay on ws://${HOST}:${PORT}`));
