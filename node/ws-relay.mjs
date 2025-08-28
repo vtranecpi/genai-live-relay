@@ -1,4 +1,4 @@
-// node/ws-relay.mjs — cloud relay with health + selftest
+// node/ws-relay.mjs — cloud relay with health + selftest + onmessage fix
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI, Modality } from '@google/genai';
@@ -11,6 +11,7 @@ const CONNECT_TIMEOUT_MS = 15000;
 function send(ws, obj){ try{ ws.send(JSON.stringify(obj)); }catch{} }
 function log(...a){ console.log('[relay]', ...a); }
 
+// ---- Self-test: try to open Live quickly and report result (no browser needed)
 async function selftestLive(apiKey) {
   const ai = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1alpha' } });
   let live;
@@ -25,9 +26,11 @@ async function selftestLive(apiKey) {
         model: LIVE_MODEL,
         config: { responseModalities:[Modality.TEXT], proactivity:{ disabled:true } },
         callbacks: {
-          onOpen: () => { clearTimeout(timer); resolve({ ok:true, stage:'open' }); live?.close?.(); },
+          onOpen: () => { clearTimeout(timer); resolve({ ok:true, stage:'open' }); try { live?.close?.(); } catch {} },
           onError: (e) => { clearTimeout(timer); resolve({ ok:false, stage:'onError', error: e?.message || String(e) }); },
-          onClose: () => {}
+          onClose: () => {},
+          // IMPORTANT: the SDK expects this to exist; keep as no-op
+          onmessage: () => {}
         }
       });
     } catch (e) {
@@ -77,6 +80,7 @@ wss.on('connection', async (client) => {
     if (m.type === 'setup' && m.systemInstruction) { live.send?.({ setup: { systemInstruction: m.systemInstruction } }); return; }
     if (m.type === 'text' && typeof m.text === 'string') { live.send?.({ input: { text: m.text } }); return; }
     if (m.type === 'end') { shutdown('client requested end'); return; }
+    // (audio input path can be added later)
   };
 
   client.on('message', raw => { try { forward(JSON.parse(raw.toString())); } catch(e){ send(client,{type:'error',message:String(e)}); } });
@@ -112,7 +116,25 @@ wss.on('connection', async (client) => {
           for (const m of pending.splice(0)) forward(m);
         },
         onClose: () => { log('live closed'); send(client,{type:'status',value:'closed'}); shutdown('live closed'); },
-        onError: (e) => { log('live err', e?.message || e); send(client,{type:'error',message: e?.message || String(e)}); }
+        onError: (e) => { log('live err', e?.message || e); send(client,{type:'error',message: e?.message || String(e)}); },
+        // We'll parse structured responses via 'onResponse' if present,
+        // but the SDK currently requires 'onmessage' to exist:
+        onmessage: () => {},
+        onResponse: (evt) => {
+          try {
+            const text =
+              evt?.text ??
+              evt?.response?.output?.[0]?.content?.parts?.map(p=>p.text).join(' ') ??
+              evt?.response?.candidates?.[0]?.content?.parts?.map(p=>p.text).join(' ');
+            if (text) send(client, { type:'text', text });
+            if (evt?.audio?.data) {
+              const b64 = (evt.audio.data instanceof ArrayBuffer)
+                ? Buffer.from(evt.audio.data).toString('base64')
+                : (typeof evt.audio.data === 'string' ? evt.audio.data : null);
+              if (b64) send(client, { type:'audio', encoding:'mp3/base64', data:b64 });
+            }
+          } catch (e) { send(client,{type:'error',message:String(e)}); }
+        }
       }
     });
 
